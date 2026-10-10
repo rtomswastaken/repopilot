@@ -1,0 +1,72 @@
+name: Scheduled Autonomous Run
+
+on:
+  schedule:
+    # Run twice daily (e.g., at 00:00 and 12:00 UTC) to remain well inside free tier minutes
+    - cron: '0 0,12 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Execute in dry-run mode (no external writes)'
+        type: boolean
+        default: false
+        required: false
+
+# Enforce strict single-runner concurrency to prevent race conditions or duplicate tasks
+concurrency:
+  group: repopilot-execution
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # Required for updating persistent state branch and creating feature branches
+  pull-requests: write   # Required for publishing PRs
+  issues: read           # Required for reading open issues
+
+jobs:
+  run-repopilot:
+    name: Execute Autonomous Repository Maintenance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out RepoPilot
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Ensure configuration file exists
+        run: |
+          if [ ! -f "config/repos.yaml" ]; then
+            echo "config/repos.yaml not found. Using config/repos.example.yaml as baseline..."
+            cp config/repos.example.yaml config/repos.yaml
+          fi
+
+      - name: Run RepoPilot Autonomous Engine
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          EXTRA_ARGS=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            EXTRA_ARGS="--dry-run"
+          fi
+          repopilot --config config/repos.yaml $EXTRA_ARGS --report-out repopilot-report.json
+
+      - name: Archive Execution Report Artifact
+        if: always()
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
+        with:
+          name: repopilot-report
+          path: repopilot-report.json
+          retention-days: 7

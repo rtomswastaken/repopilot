@@ -1,0 +1,74 @@
+# RepoPilot Configuration Example
+# Zero-cost, autonomous multi-repository configuration schema
+version: 1
+
+settings:
+  # Limits per scheduled run to remain well inside GitHub Actions free tiers
+  max_repositories_per_run: 10
+  max_tasks_per_repository: 2
+  max_retries_per_task: 2
+  max_execution_minutes: 10
+  max_ai_requests_per_run: 20
+  
+  # Security and validation gates
+  require_validation: true
+  default_publish_mode: pull_request  # Options: pull_request, draft_pr, branch_only
+  
+  # State persistence configuration
+  state_backend: git_branch           # Options: git_branch, local_file, mock
+  state_branch_name: repopilot-state
+  state_file_path: .repopilot/state.json
+  
+  # AI Provider settings (Zero-Cost / Free Tier)
+  # Supported: gemini, mock, none, openai_compatible
+  ai_provider: mock
+  ai_model: gemini-1.5-flash
+  ai_request_timeout_seconds: 30
+
+repositories:
+  - owner: YOUR_GITHUB_USERNAME
+    name: YOUR_REPOSITORY
+    enabled: true
+    
+    # High-level objectives guiding autonomous task discovery
+    goals:
+      - improve_code_quality
+      - fix_reproducible_bugs
+      - improve_documentation
+      - increase_test_coverage
+      
+    # Constrained task categories this repository allows
+    allowed_tasks:
+      - bug_fix
+      - documentation
+      - tests
+      - code_quality
+      - type_annotation
+      
+    # Security: paths that the agent MUST NEVER modify
+    excluded_paths:
+      - .github/workflows/
+      - secrets/
+      - production_credentials/
+      - "*.pem"
+      - "*.key"
+      - .env
+      - credentials.json
+      
+    # Target branch for PR creation (default: repository default branch)
+    base_branch: main
+    
+    # Custom test and lint commands to run inside the isolated sandbox
+    # Leave empty to auto-detect from repository files
+    validation:
+      test_command: ""   # e.g. "pytest tests/"
+      lint_command: ""   # e.g. "ruff check ."
+      timeout_seconds: 180
+      
+    # Publishing policy
+    publish_mode: pull_request
+    
+    # Absolute safeguard: auto_merge must ALWAYS default to false.
+    # When enabled, only PRs that pass all required CI checks and strictly
+    # match safe task types may be merged.
+    auto_merge: false
