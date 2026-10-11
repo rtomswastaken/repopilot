@@ -1,150 +1,214 @@
-# ✈️ RepoPilot
+# RepoPilot
 
-> **Autonomous, zero-cost (₹0) GitHub repository management and development agent.**
+Autonomous GitHub repository management agent designed to run unattended on scheduled GitHub Actions workflows at zero infrastructure cost.
 
-RepoPilot is a GitHub-hosted autonomous AI developer that manages multiple public and private GitHub repositories automatically. Once configured, it operates entirely within GitHub Actions scheduled workloads — requiring no daily human intervention, no local machine to be left running, and **₹0 in operating costs**.
+RepoPilot periodically inspects target repositories, analyzes code and issue context, plans targeted improvements (bug fixes, test coverage, documentation, type annotations), verifies changes in isolated workspaces, and opens pull requests with strict validation gates.
 
----
+## Overview
 
-## 🌟 Key Capabilities
+RepoPilot is built to operate autonomously without requiring a self-hosted server or paid services. It executes on GitHub Actions free runners, persists task history directly on a Git orphan branch (`repopilot-state`), and uses Google Gemini free-tier inference (or an offline rule-based mock mode).
 
-- 🤖 **Genuine Autonomy**: Discovers repositories, inspects code and open issues, proposes concrete improvements, writes tests and documentation, and opens pull requests.
-- 💰 **Zero-Cost Operation (₹0)**: Built strictly for free-tier infrastructure — GitHub Actions free runners, free Google Gemini inference, and Git-native branch storage.
-- 🛡️ **Defensive Security Boundaries**: Untrusted code is isolated in ephemeral sandboxes. Privileged credentials are scrubbed before running tests. Strict path-traversal prevention and non-bypassable forbidden-path rules protect sensitive files (`.github/workflows/`, secrets, `.env`).
-- 🔄 **Fault Isolation**: If one repository encounters an error, execution continues seamlessly across remaining repositories.
-- 🧠 **Persistent Memory**: Retains task history, retry counts, and deduplication records across runner teardowns using a dedicated Git orphan state branch (`repopilot-state`).
-- ⚡ **Local Test Mode**: Fully testable offline on local machines with zero credentials, zero network requests, and zero external side effects.
+### Key Features
 
----
+- Repository intelligence: Inspects codebase AST, detects frameworks and languages, and reads issues and documentation for task context.
+- Task planning and repair: Generates structured patch proposals, detects repeated failed patches, diagnoses test failures, and enforces bounded retry limits.
+- Isolated execution: Evaluates patches in temporary workspaces with transactional rollback snapshots on failure.
+- Defensive execution checks: Blocks path traversal, symlink escapes, and modifications to forbidden files (`.github/workflows/`, secrets, `.env`).
+- Environment scrubbing: Subprocess test runners strip sensitive environment variables (`GITHUB_TOKEN`, credentials, API keys) before running build or test commands.
+- Publishing gates: Enforces 9 pre-commit verification checks and creates Git trees and commits through the GitHub API only after test suites pass.
+- Merge policy engine: Evaluates 10 safety conditions before merging. Auto-merge is disabled by default and requires explicit configuration.
+- Durable state without databases: Maintains task deduplication signatures, execution checkpoints, and retry counts on a Git orphan branch (`repopilot-state`).
+- Offline non-AI mode: Fully operational without API keys using `--test-mode` or `--dry-run`.
 
-## 📁 Repository Structure
+## Tech Stack
 
-```
-RepoPilot/
-├── README.md                      # Project overview & quickstart
-├── ARCHITECTURE.md                # In-depth architectural blueprint & lifecycle
-├── SECURITY.md                    # Trust boundaries & threat model
-├── CONTRIBUTING.md                # Development standards & guidelines
-├── pyproject.toml                 # Package configuration & entrypoints
-├── .gitignore                     # Git ignore rules
-├── config/
-│   └── repos.example.yaml         # Example multi-repository configuration
-├── docs/
-│   ├── AGENT_CONTRACTS.md         # Contracts for 6 parallel engineering agents
-│   ├── IMPLEMENTATION_PLAN.md     # Multi-phase roadmap & integration sequence
-│   └── OPERATIONS.md              # Deployment, secrets, and disaster recovery
-├── src/
-│   └── repopilot/
-│       ├── __init__.py
-│       ├── main.py                # Application entrypoint & CLI
-│       ├── config/                # Pydantic schema validation & loader
-│       ├── core/                  # Domain models, exceptions, sanitizing logger
-│       ├── github/                # REST API client & offline mock client
-│       ├── intelligence/          # AST analysis & tech stack detection
-│       ├── ai/                    # Pluggable AI provider abstraction (Gemini / Mock)
-│       ├── execution/             # Sandboxed workspace & patch applier
-│       ├── validation/            # Automated test & lint runner
-│       ├── orchestration/         # 17-step lifecycle & budget enforcement
-│       ├── state/                 # Persistent state stores (Git branch / atomic file)
-│       └── reporting/             # GitHub Step Summary & JSON reporter
-├── tests/
-│   ├── unit/                      # Unit test suite (Config, State, AI, Security, etc.)
-│   └── integration/               # End-to-end autonomous lifecycle simulation
-└── .github/
-    └── workflows/
-        ├── scheduled.yaml         # Scheduled runner (cron: twice daily)
-        ├── manual-recovery.yaml   # Manual dispatch & dry runs
-        └── test.yaml              # Continuous integration test suite
+- Python 3.10+
+- Pydantic 2.0+ (configuration and data validation)
+- PyYAML (configuration parsing)
+- Pytest (test suite and test runner execution)
+- GitHub REST API (branch, commit, pull request, and issue management)
+- Google Gemini API (free tier) with pluggable provider architecture
+
+## Requirements
+
+- Python 3.10 or later
+- Git 2.30 or later
+- A GitHub repository with GitHub Actions enabled (for scheduled automation)
+- Google Gemini API key (optional; required only for live AI planning)
+
+## Installation
+
+Clone the repository and install dependencies in a virtual environment:
+
+```bash
+git clone https://github.com/rtomswastaken/repopilot.git
+cd repopilot
+
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -e ".[dev]"
 ```
 
----
+## Quick Start
 
-## 🚀 Quick Start (Local Test Mode)
+### Run in Offline Test Mode
 
-RepoPilot includes a comprehensive local test mode that allows full end-to-end execution without needing GitHub tokens or AI API keys:
+Execute a dry run using mock planners and zero external network calls:
 
-1. **Clone and enter repository:**
-   ```bash
-   git clone https://github.com/your-username/repo-pilot.git
-   cd repo-pilot
-   ```
+```bash
+repopilot --test-mode --config config/repos.example.yaml
+```
 
-2. **Create virtual environment and install dependencies:**
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install --upgrade pip
-   pip install -e ".[dev]"
-   ```
+Or using the Python module syntax:
 
-3. **Run tests:**
-   ```bash
-   pytest -v
-   ```
+```bash
+python -m repopilot.main --test-mode --config config/repos.example.yaml
+```
 
-4. **Run RepoPilot in Test Mode:**
-   ```bash
-   repopilot --test-mode --config config/repos.example.yaml
-   ```
+### Run with Live Gemini AI
 
----
+Set the required environment variables and run against your configuration:
 
-## ⚙️ Configuration (`config/repos.yaml`)
+```bash
+export GEMINI_API_KEY="your-gemini-api-key"
+export GITHUB_TOKEN="your-github-token"
 
-Manage target repositories declaratively:
+repopilot --config config/repos.yaml
+```
+
+### CLI Reference
+
+| Flag | Description |
+|---|---|
+| `--config`, `-c` | Path to YAML configuration file (default: `config/repos.yaml` or `config/repos.example.yaml`). |
+| `--test-mode` | Run in isolated local mode with mock providers and zero external side effects. |
+| `--dry-run` | Alias for `--test-mode`. |
+| `--repo` | Target a single repository by identifier (e.g. `owner/repo`). |
+| `--json-logs` | Emit structured JSON log lines instead of formatted text. |
+| `--log-level` | Log verbosity level: `DEBUG`, `INFO`, `WARNING`, `ERROR` (default: `INFO`). |
+| `--report-out` | Optional path to write the JSON execution summary report. |
+
+## Configuration
+
+RepoPilot is configured via a YAML file (e.g. `config/repos.yaml`).
 
 ```yaml
 version: 1
+
 settings:
+  # Limits per scheduled run
   max_repositories_per_run: 5
   max_tasks_per_repository: 2
   max_retries_per_task: 2
   max_execution_minutes: 10
   max_ai_requests_per_run: 20
-  ai_provider: gemini
+
+  # Validation and publishing gates
+  require_validation: true
+  default_publish_mode: pull_request  # Options: pull_request, draft_pr, branch_only
+
+  # State persistence (Git orphan branch avoids external database costs)
+  state_backend: git_branch           # Options: git_branch, local_file, mock
+  state_branch_name: repopilot-state
+  state_file_path: .repopilot/state.json
+
+  # AI Provider settings
+  ai_provider: gemini                 # Options: gemini, mock, none
   ai_model: gemini-1.5-flash
+  ai_request_timeout_seconds: 30
 
 repositories:
   - owner: YOUR_GITHUB_USERNAME
     name: YOUR_REPOSITORY
     enabled: true
+
     goals:
       - improve_code_quality
       - fix_reproducible_bugs
       - improve_documentation
+      - increase_test_coverage
+
     allowed_tasks:
       - bug_fix
       - documentation
       - tests
+      - code_quality
+      - type_annotation
+
+    # Paths that RepoPilot will refuse to touch
     excluded_paths:
       - .github/workflows/
       - secrets/
       - production_credentials/
+      - "*.pem"
+      - "*.key"
       - .env
+
     base_branch: main
+
     validation:
       test_command: "pytest tests/"
+      lint_command: "ruff check ."
+      timeout_seconds: 180
+
     publish_mode: pull_request
-    auto_merge: false  # Must strictly default to false
+    auto_merge: false
 ```
 
----
+## GitHub Actions Deployment
 
-## 🤖 Parallel Agent Work Packages
+### 1. Workflow Permissions
 
-RepoPilot's foundation is built with frozen core interfaces, ready for six parallel engineering agents to work simultaneously:
+In your GitHub repository, go to **Settings > Actions > General > Workflow permissions**:
+- Select **Read and write permissions**.
+- Check **Allow GitHub Actions to create and approve pull requests**.
 
-- **Agent 1 — Repository Intelligence**: AST analysis, framework heuristics, issue context extraction.
-- **Agent 2 — AI Planning & Development**: Gemini free-tier inference, structured code generation, bounded repair planner.
-- **Agent 3 — Execution & Validation**: Sandbox hardening, patch verification, linter and test runners.
-- **Agent 4 — GitHub Operations**: REST API pagination, branch and commit creation, PR publishing.
-- **Agent 5 — GitHub Actions & Operations**: Workflow optimization, concurrency locks, deployment guides.
-- **Agent 6 — Persistence & Reporting**: Git-branch state synchronization, duplicate task deduplication, metrics summaries.
+### 2. Secrets
 
-See [`docs/AGENT_CONTRACTS.md`](docs/AGENT_CONTRACTS.md) and [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) for full contract specifications.
+Under **Settings > Secrets and variables > Actions**, add:
+- `GEMINI_API_KEY`: Google Gemini API key from Google AI Studio.
+- `GITHUB_TOKEN`: Provided automatically by GitHub Actions. (For managing separate external repositories, configure a personal access token named `GH_TOKEN`).
 
----
+### 3. Workflows
 
-## 📄 License
+RepoPilot includes four predefined workflows in `.github/workflows/`:
 
-Apache License 2.0. See [LICENSE](LICENSE) for details.
+- `scheduled.yaml`: Runs twice daily (`0 0,12 * * *`) on a cron schedule to execute pending tasks within free-tier runner limits.
+- `manual-recovery.yaml`: Manual trigger (`workflow_dispatch`) for on-demand execution, specific repository targeting, or dry runs.
+- `test.yaml`: CI test matrix running unit and integration tests on pull requests and pushes to `main`.
+- `validate-config.yaml`: Validates configuration syntax against Pydantic schemas before running jobs.
+
+## Development and Testing
+
+Run the full test suite with Pytest:
+
+```bash
+pytest -v
+```
+
+Run test suite with coverage report:
+
+```bash
+pytest --cov=repopilot --cov-report=term-missing
+```
+
+The test suite covers:
+- Configuration parsing, Pydantic validation, and defaults
+- Subprocess execution, timeouts, and credential scrubbing
+- Path traversal and forbidden path enforcement
+- AST inspection and framework detection
+- Repair planner heuristics and anti-suppression checks
+- Git blob, tree, commit, and pull request publication pipelines
+- Git orphan branch state storage, atomic updates, and recovery
+- Workflow YAML schema and security checks
+
+## Status and Limitations
+
+- All 140 unit and integration tests pass locally and in CI.
+- Subprocess validation uses isolated temporary working directories and environment variable stripping. It does not use Linux kernel cgroups or container virtualization. When running untrusted code from public forks, run RepoPilot in an isolated container or runner environment.
+- Google Gemini free tier rate limits (15 RPM / 1,500 RPD) are respected via an internal budget tracker that caps AI calls per run. When rate limits or quotas are reached, execution gracefully falls back or halts until the next scheduled run.
+
+## License
+
+This project is licensed under the Apache License 2.0. See `pyproject.toml` for metadata.
