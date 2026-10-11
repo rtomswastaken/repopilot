@@ -2,11 +2,11 @@
 
 import os
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Union
 import yaml
 from pydantic import ValidationError
 
-from repopilot.config.models import RepoPilotConfig
+from repopilot.config.models import RepoPilotConfig, scan_for_credentials
 from repopilot.core.exceptions import ConfigurationError
 
 
@@ -24,7 +24,7 @@ def load_config(config_path: Optional[Union[str, Path]] = None) -> RepoPilotConf
     1. Explicit `config_path` parameter if supplied.
     2. REPOPILOT_CONFIG_PATH environment variable if set.
     3. REPOPILOT_CONFIG_YAML inline YAML content environment variable if set.
-    4. Default file locations (`config/repos.yaml`, `config/repos.example.yaml`).
+    4. Default file locations (`config/repos.yaml`, `config/repos.example.yaml`, `repos.yaml`).
     """
     raw_content: Optional[str] = None
     resolved_path: Optional[Path] = None
@@ -58,6 +58,12 @@ def load_config(config_path: Optional[Union[str, Path]] = None) -> RepoPilotConf
 
     if not isinstance(data, dict):
         raise ConfigurationError("Configuration root must be a YAML dictionary/object.")
+
+    # Explicit pre-scan for credentials to provide clear error message before pydantic parsing
+    try:
+        scan_for_credentials(data)
+    except ValueError as e:
+        raise ConfigurationError(str(e)) from e
 
     try:
         config = RepoPilotConfig.model_validate(data)

@@ -1,0 +1,72 @@
+name: Configuration & Policy Validation
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'config/**'
+      - '.github/workflows/**'
+      - 'src/repopilot/config/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'config/**'
+      - '.github/workflows/**'
+      - 'src/repopilot/config/**'
+  workflow_dispatch:
+
+# Drop all default workflow permissions to follow principle of least privilege
+permissions: {}
+
+concurrency:
+  group: config-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate Configuration, Schemas & Security Policies
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Validate configuration files and schemas
+        run: |
+          python -c "
+          from pathlib import Path
+          from repopilot.config.loader import load_config
+
+          config_dir = Path('config')
+          configs = list(config_dir.glob('*.yaml')) + list(config_dir.glob('*.yml'))
+          assert len(configs) > 0, 'No config files found in config/'
+
+          for cfg_file in configs:
+              print(f'Validating: {cfg_file}')
+              cfg = load_config(cfg_file)
+              assert cfg.version == 1, f'{cfg_file}: unsupported version {cfg.version}'
+              assert len(cfg.repositories) > 0, f'{cfg_file}: no repositories defined'
+              for repo in cfg.repositories:
+                  assert repo.auto_merge is False or isinstance(repo.auto_merge, bool), f'{repo.name}: auto_merge must be boolean'
+                  assert len(repo.excluded_paths) > 0, f'{repo.name}: excluded_paths cannot be empty'
+                  assert '.github/workflows/' in repo.excluded_paths, f'{repo.name}: .github/workflows/ must be excluded'
+              print(f'Passed: {cfg_file}')
+          "
+
+      - name: Validate workflow syntax and policies
+        run: |
+          pytest -v tests/unit/test_workflows_syntax.py

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       target_repo:
-        description: 'Specific repository to target (e.g. owner/repo, or blank for all)'
+        description: 'Specific repository to target (e.g. owner/repo, or blank for all configured repositories)'
         type: string
         required: false
         default: ''
@@ -22,22 +22,84 @@ on:
           - WARNING
           - ERROR
         default: INFO
+      config_path:
+        description: 'Path to configuration file'
+        type: string
+        required: false
+        default: 'config/repos.yaml'
 
+# Enforce strict single-runner concurrency to prevent race conditions or duplicate tasks
 concurrency:
   group: repopilot-execution
   cancel-in-progress: false
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: read
+# Drop all default workflow permissions to follow principle of least privilege
+permissions: {}
 
 jobs:
+  validate-input-and-config:
+    name: Validate Input & Configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Validate inputs and configuration
+        env:
+          INPUT_TARGET_REPO: ${{ inputs.target_repo }}
+          INPUT_CONFIG_PATH: ${{ inputs.config_path }}
+        run: |
+          # Sanitize and validate target_repo format (defend against command injection)
+          if [ -n "$INPUT_TARGET_REPO" ]; then
+            if ! echo "$INPUT_TARGET_REPO" | grep -Eq '^[a-zA-Z0-9_.-]+(/[a-zA-Z0-9_.-]+)?$'; then
+              echo "::error::Invalid target_repo format: '$INPUT_TARGET_REPO'. Expected 'owner/repo' or 'repo'."
+              exit 1
+            fi
+            echo "Validated target repository filter: $INPUT_TARGET_REPO"
+          fi
+
+          # Sanitize config_path
+          CFG_PATH="${INPUT_CONFIG_PATH:-config/repos.yaml}"
+          if ! echo "$CFG_PATH" | grep -Eq '^[a-zA-Z0-9_./-]+\.(yaml|yml)$'; then
+            echo "::error::Invalid config_path format: '$CFG_PATH'."
+            exit 1
+          fi
+
+          # Validate configuration schema
+          python -c "
+          from pathlib import Path
+          from repopilot.config.loader import load_config
+          p = Path('$CFG_PATH')
+          if not p.exists():
+              print(f'Specified config {p} not found, checking fallback...')
+              p = Path('config/repos.example.yaml')
+          cfg = load_config(p)
+          print(f'Configuration valid at {p} with {len(cfg.repositories)} repositories.')
+          "
+
   manual-run:
     name: Execute Manual Recovery Run
+    needs: validate-input-and-config
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
+    permissions:
+      contents: write       # Required for state persistence branch and PR feature branches
+      pull-requests: write  # Required for publishing PRs
+      issues: read          # Required for reading open issues
     steps:
       - name: Check out RepoPilot
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -55,24 +117,91 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
+      - name: Configure Git identity
+        run: |
+          git config user.name "repopilot-bot[bot]"
+          git config user.email "repopilot-bot[bot]@users.noreply.github.com"
+          git fetch origin repopilot-state:repopilot-state 2>/dev/null || true
+
+      - name: Ensure configuration file exists
+        env:
+          INPUT_CONFIG_PATH: ${{ inputs.config_path }}
+        run: |
+          CFG_PATH="${INPUT_CONFIG_PATH:-config/repos.yaml}"
+          if [ ! -f "$CFG_PATH" ]; then
+            echo "Configuration file '$CFG_PATH' not found. Falling back to config/repos.example.yaml..."
+            cp config/repos.example.yaml config/repos.yaml
+          fi
+
       - name: Run Targeted Recovery
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          INPUT_TARGET_REPO: ${{ inputs.target_repo }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_LOG_LEVEL: ${{ inputs.log_level }}
+          INPUT_CONFIG_PATH: ${{ inputs.config_path }}
         run: |
-          CMD_ARGS="--log-level ${{ inputs.log_level }} --report-out recovery-report.json"
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
+          CFG_PATH="${INPUT_CONFIG_PATH:-config/repos.yaml}"
+          if [ ! -f "$CFG_PATH" ]; then
+            CFG_PATH="config/repos.yaml"
+          fi
+
+          CMD_ARGS="--config $CFG_PATH --log-level $INPUT_LOG_LEVEL --report-out recovery-report.json"
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
             CMD_ARGS="$CMD_ARGS --dry-run"
           fi
-          if [ -n "${{ inputs.target_repo }}" ]; then
-            CMD_ARGS="$CMD_ARGS --repo ${{ inputs.target_repo }}"
+          if [ -n "$INPUT_TARGET_REPO" ]; then
+            CMD_ARGS="$CMD_ARGS --repo $INPUT_TARGET_REPO"
           fi
 
-          if [ ! -f "config/repos.yaml" ]; then
-            cp config/repos.example.yaml config/repos.yaml
+          echo "Executing: repopilot $CMD_ARGS"
+          set +e
+          repopilot $CMD_ARGS
+          EXIT_CODE=$?
+          set -e
+
+          echo "Manual recovery run exited with code $EXIT_CODE"
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "Recovery completed successfully without errors."
+          elif [ $EXIT_CODE -eq 2 ]; then
+            echo "Recovery completed with task-level failures recorded in report."
+          else
+            echo "::error::Fatal operational or configuration error encountered (code $EXIT_CODE)."
+            exit $EXIT_CODE
           fi
 
-          repopilot --config config/repos.yaml $CMD_ARGS
+      - name: Persist Durable State to repopilot-state Branch
+        if: always() && inputs.dry_run != 'true'
+        run: |
+          if [ -f ".repopilot/state.json" ]; then
+            echo "Syncing persistent state to branch 'repopilot-state'..."
+            BRANCH="repopilot-state"
+            TMP_STATE=$(mktemp)
+            cp .repopilot/state.json "$TMP_STATE"
+
+            CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+            if git rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
+              git checkout -B "$BRANCH" "origin/$BRANCH"
+            elif git rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
+              git checkout "$BRANCH"
+            else
+              git checkout --orphan "$BRANCH"
+              git rm -rf . >/dev/null 2>&1 || true
+            fi
+
+            cp "$TMP_STATE" state.json
+            rm -f "$TMP_STATE"
+            git add state.json
+
+            if ! git diff --cached --quiet; then
+              git commit -m "chore(state): manual recovery state update [skip ci]"
+              git push origin "$BRANCH" || echo "State push encountered conflict; will retry next run."
+            else
+              echo "State unchanged; no commit necessary."
+            fi
+            git checkout "$CURRENT_BRANCH" 2>/dev/null || true
+          fi
 
       - name: Archive Recovery Report Artifact
         if: always()
@@ -81,3 +210,4 @@ jobs:
           name: manual-recovery-report
           path: recovery-report.json
           retention-days: 7
+          if-no-files-found: ignore

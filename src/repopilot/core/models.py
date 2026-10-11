@@ -68,6 +68,12 @@ class ValidationCheck(BaseModel):
     stdout: str = ""
     stderr: str = ""
     duration_seconds: float = 0.0
+    command: Optional[str] = None
+    timeout: bool = False
+    failure_category: Optional[str] = None
+    tests_run: Optional[int] = None
+    tests_passed: Optional[int] = None
+    tests_failed: Optional[int] = None
 
 
 class ValidationResult(BaseModel):
@@ -77,6 +83,13 @@ class ValidationResult(BaseModel):
     checks: List[ValidationCheck] = Field(default_factory=list)
     error_summary: Optional[str] = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+    failure_category: Optional[str] = None
+    recoverable: bool = False
+    is_publishable: bool = False
+    has_tests: bool = True
+    changed_files: List[str] = Field(default_factory=list)
+    diagnostics: Dict[str, Any] = Field(default_factory=dict)
+
 
 
 class Task(BaseModel):

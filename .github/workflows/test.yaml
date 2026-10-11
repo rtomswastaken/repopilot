@@ -6,27 +6,33 @@ on:
   pull_request:
     branches: [ main ]
 
-permissions:
-  contents: read
+# Drop all default workflow permissions to follow principle of least privilege
+permissions: {}
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
-    name: Run Unit and Integration Tests
+    name: Run Unit and Integration Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
 
     steps:
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: Set up Python
+      - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: "pip"
 
       - name: Install dependencies
@@ -36,7 +42,7 @@ jobs:
 
       - name: Execute pytest suite
         run: |
-          pytest -v --junitxml=junit.xml
+          pytest -v --junitxml=junit-${{ matrix.python-version }}.xml
 
       - name: Verify CLI starts in test mode
         run: |

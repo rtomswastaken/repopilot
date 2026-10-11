@@ -2,32 +2,78 @@ name: Scheduled Autonomous Run
 
 on:
   schedule:
-    # Run twice daily (e.g., at 00:00 and 12:00 UTC) to remain well inside free tier minutes
+    # Run twice daily (at 00:00 and 12:00 UTC) to remain well inside free runner limits (60 runs/month)
     - cron: '0 0,12 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Execute in dry-run mode (no external writes)'
+        description: 'Execute in dry-run mode (no external branches, PRs, or commits created)'
         type: boolean
         default: false
         required: false
+      log_level:
+        description: 'Log verbosity level'
+        type: choice
+        options:
+          - DEBUG
+          - INFO
+          - WARNING
+          - ERROR
+        default: INFO
+        required: false
 
-# Enforce strict single-runner concurrency to prevent race conditions or duplicate tasks
+# Concurrency group serialization: Prevent overlapping runs from corrupting shared persistent state
 concurrency:
   group: repopilot-execution
   cancel-in-progress: false
 
-permissions:
-  contents: write        # Required for updating persistent state branch and creating feature branches
-  pull-requests: write   # Required for publishing PRs
-  issues: read           # Required for reading open issues
+# Drop all default workflow permissions to follow principle of least privilege
+permissions: {}
 
 jobs:
+  validate-config:
+    name: Validate Configuration & Security Policies
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v5.4.0
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Validate configuration schema and security rules
+        run: |
+          python -c "
+          from pathlib import Path
+          from repopilot.config.loader import load_config
+          cfg_path = Path('config/repos.yaml') if Path('config/repos.yaml').exists() else Path('config/repos.example.yaml')
+          print(f'Validating configuration at: {cfg_path}')
+          cfg = load_config(cfg_path)
+          assert cfg.version == 1, 'Invalid config version'
+          assert len(cfg.repositories) > 0, 'No repositories configured'
+          print(f'Configuration valid: {len(cfg.repositories)} repository/repositories defined.')
+          "
+
   run-repopilot:
     name: Execute Autonomous Repository Maintenance
+    needs: validate-config
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
+    permissions:
+      contents: write       # Required for state persistence branch and PR feature branches
+      pull-requests: write  # Required for publishing PRs
+      issues: read          # Required for reading open issues
     steps:
       - name: Check out RepoPilot
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -45,6 +91,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .
 
+      - name: Configure Git identity
+        run: |
+          git config user.name "repopilot-bot[bot]"
+          git config user.email "repopilot-bot[bot]@users.noreply.github.com"
+          git fetch origin repopilot-state:repopilot-state 2>/dev/null || true
+
       - name: Ensure configuration file exists
         run: |
           if [ ! -f "config/repos.yaml" ]; then
@@ -56,17 +108,70 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_LOG_LEVEL: ${{ inputs.log_level }}
         run: |
-          EXTRA_ARGS=""
-          if [ "${{ inputs.dry_run }}" = "true" ]; then
-            EXTRA_ARGS="--dry-run"
+          CMD_ARGS="--config config/repos.yaml --report-out repopilot-report.json"
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
+            CMD_ARGS="$CMD_ARGS --dry-run"
           fi
-          repopilot --config config/repos.yaml $EXTRA_ARGS --report-out repopilot-report.json
+          if [ -n "$INPUT_LOG_LEVEL" ]; then
+            CMD_ARGS="$CMD_ARGS --log-level $INPUT_LOG_LEVEL"
+          fi
+
+          echo "Invoking entry point: repopilot $CMD_ARGS"
+          set +e
+          repopilot $CMD_ARGS
+          EXIT_CODE=$?
+          set -e
+
+          echo "RepoPilot process exited with code $EXIT_CODE"
+          if [ $EXIT_CODE -eq 0 ]; then
+            echo "Execution completed successfully with zero task errors."
+          elif [ $EXIT_CODE -eq 2 ]; then
+            echo "Execution completed with task-level failures recorded in report."
+          else
+            echo "::error::Fatal operational or configuration error encountered (code $EXIT_CODE)."
+            exit $EXIT_CODE
+          fi
+
+      - name: Persist Durable State to repopilot-state Branch
+        if: always() && inputs.dry_run != 'true'
+        run: |
+          if [ -f ".repopilot/state.json" ]; then
+            echo "Syncing persistent state to branch 'repopilot-state'..."
+            BRANCH="repopilot-state"
+            TMP_STATE=$(mktemp)
+            cp .repopilot/state.json "$TMP_STATE"
+
+            CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+            if git rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
+              git checkout -B "$BRANCH" "origin/$BRANCH"
+            elif git rev-parse --verify "$BRANCH" >/dev/null 2>&1; then
+              git checkout "$BRANCH"
+            else
+              git checkout --orphan "$BRANCH"
+              git rm -rf . >/dev/null 2>&1 || true
+            fi
+
+            cp "$TMP_STATE" state.json
+            rm -f "$TMP_STATE"
+            git add state.json
+
+            if ! git diff --cached --quiet; then
+              git commit -m "chore(state): autonomous execution state update [skip ci]"
+              git push origin "$BRANCH" || echo "State push encountered conflict; state will merge on next run."
+            else
+              echo "State unchanged; no commit necessary."
+            fi
+            git checkout "$CURRENT_BRANCH" 2>/dev/null || true
+          fi
 
       - name: Archive Execution Report Artifact
         if: always()
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # v4.6.1
         with:
-          name: repopilot-report
+          name: repopilot-scheduled-report
           path: repopilot-report.json
           retention-days: 7
+          if-no-files-found: ignore

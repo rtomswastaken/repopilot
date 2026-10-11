@@ -32,6 +32,12 @@ class AIPlanRequest(BaseModel):
     file_tree: List[str] = Field(default_factory=list)
     recent_commits: List[str] = Field(default_factory=list)
     open_issues: List[Dict[str, Any]] = Field(default_factory=list)
+    # Repository context and history extensions (with default backwards-compatible values)
+    repo_context: Optional[Any] = None
+    readme_content: Optional[str] = None
+    doc_files: List[str] = Field(default_factory=list)
+    task_history: List[str] = Field(default_factory=list)
+    rejected_tasks: List[str] = Field(default_factory=list)
 
 
 class AICodeChangeRequest(BaseModel):
@@ -41,6 +47,10 @@ class AICodeChangeRequest(BaseModel):
     file_contents: Dict[str, str] = Field(default_factory=dict)
     validation_errors: Optional[str] = None
     retry_attempt: int = 0
+    # Additional context for repair and safety bounds
+    excluded_paths: List[str] = Field(default_factory=list)
+    previous_patches: List[ChangePlan] = Field(default_factory=list)
+    max_retries: int = 2
 
 
 class AIResponse(BaseModel):
@@ -57,7 +67,7 @@ class AIProviderInterface(ABC):
 
     @abstractmethod
     def get_name(self) -> str:
-        """Name of the provider (e.g., 'gemini', 'mock')."""
+        """Name of the provider (e.g., 'gemini', 'mock', 'local')."""
         pass
 
     @abstractmethod
@@ -68,6 +78,14 @@ class AIProviderInterface(ABC):
     def is_available(self) -> bool:
         """Convenience method checking if inference can proceed."""
         return self.get_status() == ProviderStatus.AVAILABLE
+
+    def get_usage(self) -> TokenUsage:
+        """Return cumulative token usage for the provider instance."""
+        return TokenUsage(estimated_cost_usd=0.0)
+
+    def check_connection(self) -> bool:
+        """Perform a quick health/connectivity check to verify inference availability."""
+        return self.is_available()
 
     @abstractmethod
     def plan_improvements(self, request: AIPlanRequest) -> List[Task]:

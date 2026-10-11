@@ -10,10 +10,10 @@ from typing import Any, Dict
 
 # Common patterns for secrets to mask in logs
 SECRET_PATTERNS = [
-    re.compile(r"ghp_[A-Za-z0-9_]{36,255}"),                 # Classic GitHub PAT
+    re.compile(r"ghp_[A-Za-z0-9_]{16,255}"),                 # Classic GitHub PAT
     re.compile(r"github_pat_[A-Za-z0-9_]{82}"),              # Fine-grained PAT
     re.compile(r"ghs_[A-Za-z0-9_]{36}"),                     # GitHub App Installation token
-    re.compile(r"AIzaSy[A-Za-z0-9_\-]{33}"),                 # Google AI / Gemini API key
+    re.compile(r"AIzaSy[A-Za-z0-9_\-]{20,60}"),                 # Google AI / Gemini API key
     re.compile(r"sk-[A-Za-z0-9_\-]{32,100}"),                # OpenAI / Anthropic key
     re.compile(r"Bearer\s+([A-Za-z0-9_\-\.]+)", re.IGNORECASE),  # Authorization Bearer tokens
     re.compile(r"token\s+([A-Za-z0-9_\-\.]+)", re.IGNORECASE),   # Authorization token

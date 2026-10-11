@@ -65,3 +65,39 @@ class GitHubAPIError(RepoPilotError):
     def __init__(self, message: str, status_code: Optional[int] = None, details: Optional[Dict[str, Any]] = None):
         super().__init__(message, details)
         self.status_code = status_code
+
+
+class PathTraversalError(SecurityViolationError):
+    """Raised when an operation attempts directory traversal outside the workspace."""
+    pass
+
+
+class ProhibitedPathError(SecurityViolationError):
+    """Raised when an operation targets a protected or excluded file path."""
+    pass
+
+
+class SymlinkEscapeError(SecurityViolationError):
+    """Raised when a symlink resolves to a target outside the workspace."""
+    pass
+
+
+class ResourceLimitExceededError(RepoPilotError):
+    """Raised when memory, CPU, disk, or output resource limits are exceeded."""
+    pass
+
+
+class PatchApplicationError(RepoPilotError):
+    """Raised when a patch or file modification cannot be applied cleanly."""
+    pass
+
+
+class ConflictingPatchError(PatchApplicationError):
+    """Raised when a patch contains contradictory or ambiguous modifications."""
+    pass
+
+
+class EnvironmentSetupError(RepoPilotError):
+    """Raised when the sandbox environment or runtime dependencies fail setup."""
+    pass
+

@@ -49,6 +49,7 @@ htmlcov/
 
 # RepoPilot Runtime State & Cache
 state/
+.repopilot/
 .repopilot_state/
 *.log
 local_reports/
